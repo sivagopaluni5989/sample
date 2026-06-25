@@ -824,7 +824,7 @@ if (files.isEmpty) {
   return [];
 }
 
-    for (final path in files) {
+  for (final path in files) {
   debugPrint("SAF FILE -> $path");
 
   final lower = path.toLowerCase();
@@ -841,21 +841,21 @@ if (files.isEmpty) {
     continue;
   }
 
-  if (!File(path).existsSync()) {
-    debugPrint("File not found -> $path");
-    continue;
+  try {
+    statusFiles.add(
+      StatusFile(
+        name: path.split('/').last,
+        cachePath: path,
+        isVideo: isVideo,
+      ),
+    );
+  } catch (e) {
+    debugPrint("Skipping file: $e");
   }
-
-  statusFiles.add(
-    StatusFile(
-      name: path.split('/').last,
-      cachePath: path,
-      isVideo: isVideo,
-    ),
-  );
 }
 
-    debugPrint("Loaded ${statusFiles.length} status files");
+debugPrint("Loaded ${statusFiles.length} status files");
+
   } catch (e) {
     debugPrint("SAF loading error: $e");
   }
