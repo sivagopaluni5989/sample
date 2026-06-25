@@ -26,6 +26,7 @@ class MyApp extends StatelessWidget {
     );
   }
 }
+
 const String generalFolderKey = "general_saf_folder";
 const String businessFolderKey = "business_saf_folder";
 
@@ -33,19 +34,31 @@ class FileHelper {
   static Future<List<String>> getFilesPath(String folderUri) async {
     final saf = Saf(folderUri);
     final result = await saf.getFilesPath();
-    return result ?? <String>[]; // ✅ ensures non-null List<String>
+    return result ?? <String>[];
+  }
+
+  static Future<File> copyToCache(String path) async {
+    final file = File(path);
+    final bytes = await file.readAsBytes();
+    final cacheDir = await getTemporaryDirectory();
+    final cacheFile = File('${cacheDir.path}/${DateTime.now().millisecondsSinceEpoch}');
+    await cacheFile.writeAsBytes(bytes);
+    return cacheFile;
+  }
+
+  static Future<void> saveToGallery(String path) async {
+    final file = File(path);
+    final bytes = await file.readAsBytes();
+    final dir = await getExternalStorageDirectory();
+    final savePath = "${dir!.path}/WAStatusSaver";
+    await Directory(savePath).create(recursive: true);
+    final outFile = File("$savePath/${DateTime.now().millisecondsSinceEpoch}${path.endsWith(".mp4") ? ".mp4" : ".jpg"}");
+    await outFile.writeAsBytes(bytes);
   }
 }
 
-class ThumbnailCacheService {
-  static Future<String> getCacheDir() async {
-    final dir = await getTemporaryDirectory();
-    return dir.path;
-  }
-}
 class SafService {
   final SharedPreferences prefs;
-
   SafService(this.prefs);
 
   Future<void> saveFolderUri(String key, String uri) async {
@@ -56,15 +69,16 @@ class SafService {
     return prefs.getString(key);
   }
 }
+
 class StatusScannerService {
   Future<List<String>> scanStatuses(String folderUri) async {
     return await FileHelper.getFilesPath(folderUri);
   }
 }
+
 class StatusController {
   final SafService safService;
   final StatusScannerService scanner;
-
   StatusController(this.safService, this.scanner);
 
   Future<List<String>> loadStatuses(String key) async {
@@ -73,9 +87,9 @@ class StatusController {
     return await scanner.scanStatuses(uri);
   }
 }
+
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
-
   @override
   State<HomePage> createState() => _HomePageState();
 }
@@ -96,11 +110,19 @@ class _HomePageState extends State<HomePage>
     _loadStatuses();
     _initBannerAd();
   }
+
   Future<void> _loadStatuses() async {
     final prefs = await SharedPreferences.getInstance();
     final safService = SafService(prefs);
     final scanner = StatusScannerService();
     final controller = StatusController(safService, scanner);
+
+    // SAF 1.0.4: hardcode paths
+    const generalPath = "/storage/emulated/0/WhatsApp/Media/.Statuses";
+    const businessPath = "/storage/emulated/0/WhatsApp Business/Media/.Statuses";
+
+    await safService.saveFolderUri(generalFolderKey, generalPath);
+    await safService.saveFolderUri(businessFolderKey, businessPath);
 
     generalFiles = await controller.loadStatuses(generalFolderKey);
     businessFiles = await controller.loadStatuses(businessFolderKey);
@@ -109,21 +131,19 @@ class _HomePageState extends State<HomePage>
       isLoading = false;
     });
   }
+
   void _initBannerAd() {
     bannerAd = BannerAd(
       adUnitId: 'ca-app-pub-3940256099942544/6300978111',
       size: AdSize.banner,
       request: const AdRequest(),
       listener: BannerAdListener(
-        onAdLoaded: (ad) {
-          setState(() => adLoaded = true);
-        },
-        onAdFailedToLoad: (ad, error) {
-          ad.dispose();
-        },
+        onAdLoaded: (ad) => setState(() => adLoaded = true),
+        onAdFailedToLoad: (ad, error) => ad.dispose(),
       ),
     )..load();
   }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -178,22 +198,52 @@ class _HomePageState extends State<HomePage>
     return GridView.builder(
       itemCount: files.length,
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        crossAxisSpacing: 4,
-        mainAxisSpacing: 4,
+        crossAxisCount: 2,
+        crossAxisSpacing: 8,
+        mainAxisSpacing: 8,
+        childAspectRatio: 0.8,
       ),
       itemBuilder: (context, index) {
-        final file = files[index];
-        return GestureDetector(
-          onTap: () {
-            Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => PreviewScreen(filePath: file),
+        final path = files[index];
+        return FutureBuilder<File>(
+          future: FileHelper.copyToCache(path),
+          builder: (context, snapshot) {
+            if (!snapshot.hasData) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            final file = snapshot.data!;
+            return Card(
+              elevation: 4,
+              child: Column(
+                children: [
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => PreviewScreen(filePath: file.path),
+                          ),
+                        );
+                      },
+                      child: Image.file(file, fit: BoxFit.cover, width: double.infinity),
+                    ),
+                  ),
+                  ElevatedButton.icon(
+                    onPressed: () async {
+                      await FileHelper.saveToGallery(path);
+                      if (!mounted) return; // ✅ fix async context warning
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text("Status saved to gallery")),
+                      );
+                    },
+                    icon: const Icon(Icons.download),
+                    label: const Text("Save"),
+                  ),
+                ],
               ),
             );
           },
-          child: Image.file(File(file), fit: BoxFit.cover),
         );
       },
     );
@@ -217,6 +267,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
     if (widget.filePath.endsWith(".mp4")) {
       _controller = VideoPlayerController.file(File(widget.filePath))
         ..initialize().then((_) {
+          if (!mounted) return;
           setState(() {});
           _controller!.play();
         });
@@ -237,6 +288,7 @@ class _PreviewScreenState extends State<PreviewScreen> {
           : Image.file(File(widget.filePath)),
     );
   }
+
   @override
   void dispose() {
     _controller?.dispose();
